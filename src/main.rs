@@ -1,5 +1,6 @@
 mod audio;
 mod hotkey;
+mod injector;
 mod sounds;
 mod ui;
 
