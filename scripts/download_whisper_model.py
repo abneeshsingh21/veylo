@@ -3,10 +3,10 @@ import urllib.request
 import sys
 
 MODELS = {
-    "large-v3-turbo-q4": {
-        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q4_0.bin",
-        "filename": "ggml-large-v3-turbo-q4_0.bin",
-        "size_mb": 390
+    "large-v3-turbo-q5": {
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        "filename": "ggml-large-v3-turbo-q5_0.bin",
+        "size_mb": 547
     },
     "base": {
         "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
