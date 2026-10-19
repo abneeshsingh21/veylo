@@ -3,6 +3,7 @@
 Cargo.lock
 models/*.gguf
 models/*.bin
+dataset/*.jsonl
 *.pdb
 *.exe
 
