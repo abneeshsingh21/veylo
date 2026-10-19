@@ -16,8 +16,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, TranslateMessage, MSG,
+    DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_HOTKEY,
 };
 
 fn main() {
@@ -89,7 +92,24 @@ fn main() {
     // 6. Initialize Global Low-Level Keyboard Hook
     let hotkey_listener = HotkeyListener::new();
 
-    // 7. Spawn Event Processor Thread
+    // 7. Register Kernel-Level Global Hotkeys as a Dual-Layer Guarantee
+    unsafe {
+        // Hotkey 101: Ctrl + Space
+        let h1 = RegisterHotKey(None, 101, MOD_CONTROL | MOD_NOREPEAT, 0x20);
+        // Hotkey 102: Alt + Space
+        let h2 = RegisterHotKey(None, 102, MOD_ALT | MOD_NOREPEAT, 0x20);
+        // Hotkey 103: F8 (VK_F8)
+        let h3 = RegisterHotKey(None, 103, MOD_NOREPEAT, 0x77);
+
+        println!(
+            "[KernelHotkeys] Registered OS hotkeys: Ctrl+Space: {}, Alt+Space: {}, F8: {}",
+            h1.is_ok(),
+            h2.is_ok(),
+            h3.is_ok()
+        );
+    }
+
+    // 8. Spawn Event Processor Thread
     let hotkey_rx = hotkey_listener.receiver.clone();
     let audio_for_hotkey = audio_recorder.clone();
     let sounds_for_hotkey = sound_engine.clone();
@@ -97,31 +117,33 @@ fn main() {
 
     thread::spawn(move || {
         while let Ok(action) = hotkey_rx.recv() {
-            match action {
-                HotkeyAction::Start => {
-                    println!("\n>>> [HOTKEY: START RECORDING]");
+            let should_start = match action {
+                HotkeyAction::Start => true,
+                HotkeyAction::Stop => false,
+                HotkeyAction::Toggle => !audio_for_hotkey.is_recording(),
+            };
+
+            if should_start {
+                if !audio_for_hotkey.is_recording() {
+                    println!("\n>>> [VOICE RECORDING STARTED]");
                     sounds_for_hotkey.play_start();
                     pill_for_hotkey.show();
                     audio_for_hotkey.start_recording();
                 }
-                HotkeyAction::Stop => {
-                    println!("<<< [HOTKEY: STOP RECORDING]");
+            } else {
+                if audio_for_hotkey.is_recording() {
+                    println!("<<< [VOICE RECORDING STOPPED]");
                     sounds_for_hotkey.play_stop();
 
-                    // Snapshot the active application context before any window changes
                     let active_ctx = ActiveContext::capture();
                     let (wav_bytes, duration) = audio_for_hotkey.stop_recording_as_wav();
                     println!(
-                        "[Pipeline] Captured {:.2}s of audio ({} bytes WAV). Context: \"{}\" [Code: {}, Email: {}, Chat: {}]",
+                        "[Pipeline] Captured {:.2}s of audio ({} bytes WAV). Active: \"{}\"",
                         duration,
                         wav_bytes.len(),
-                        active_ctx.window_title,
-                        active_ctx.is_code_editor,
-                        active_ctx.is_email_app,
-                        active_ctx.is_chat_app
+                        active_ctx.window_title
                     );
 
-                    // Ignore accidental micro-clicks (< 350ms)
                     if duration < 0.35 || wav_bytes.is_empty() {
                         println!("[Pipeline] Audio clip too short (< 350ms), ignoring.");
                         pill_for_hotkey.hide();
@@ -148,19 +170,16 @@ fn main() {
                                 );
 
                                 if !resp.text.is_empty() {
-                                    // Play tactile paste chime & inject into caret
                                     sounds_worker.play_paste();
                                     injector::inject_text(&resp.text);
                                 }
 
-                                // Section 8.1: brief 150 ms brighten of the rim, then collapse to idle
                                 pill_worker.set_mode(PillMode::Done);
                                 thread::sleep(Duration::from_millis(150));
                                 pill_worker.hide();
                             }
                             Err(err) => {
                                 eprintln!("[Veylo AI Error] {}", err);
-                                // Section 8.1: rim tints warm red #FF6B5E on error
                                 pill_worker.set_mode(PillMode::Error);
                                 thread::sleep(Duration::from_millis(1200));
                                 pill_worker.hide();
@@ -173,8 +192,11 @@ fn main() {
     });
 
     println!("\n[Ready] Veylo running and active!");
-    println!("[Shortcut] HOLD: 'Ctrl + Win' OR 'Ctrl + Space' OR 'Right Ctrl'");
-    println!("[Shortcut] OR PRESS 'F8' to toggle recording on/off.\n");
+    println!("[Shortcuts Supported (Dual-Layer: Hook + OS Kernel)]");
+    println!("   -> PRESS or HOLD 'Ctrl + Space' or 'Alt + Space'");
+    println!("   -> PRESS or HOLD 'F8'");
+    println!("   -> HOLD 'Ctrl + Win'");
+    println!("   -> HOLD 'Right Ctrl' alone\n");
 
     // Welcome flash: show the Liquid Glass Pill on screen for 1.2 seconds
     sound_engine.play_start();
@@ -186,9 +208,14 @@ fn main() {
     });
 
     // Main Win32 event pump
+    let main_tx = hotkey_listener.sender.clone();
     unsafe {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            if msg.message == WM_HOTKEY {
+                println!("[Kernel Event] WM_HOTKEY received! (ID: {})", msg.wParam.0);
+                let _ = main_tx.send(HotkeyAction::Toggle);
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

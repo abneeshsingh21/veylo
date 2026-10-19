@@ -1,8 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_CONTROL, VK_F8, VK_LCONTROL, VK_LMENU, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RWIN,
     VK_SPACE,
@@ -17,6 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub enum HotkeyAction {
     Start,
     Stop,
+    Toggle,
 }
 
 static mut HOOK_HANDLE: Option<HHOOK> = None;
@@ -33,33 +33,31 @@ static RCTRL_HELD: AtomicBool = AtomicBool::new(false);
 pub struct HotkeyListener {
     _thread: thread::JoinHandle<()>,
     pub receiver: Receiver<HotkeyAction>,
+    pub sender: Sender<HotkeyAction>,
 }
 
 impl HotkeyListener {
     pub fn new() -> Self {
         let (sender, receiver) = crossbeam_channel::unbounded();
+        let s_clone = sender.clone();
 
         let thread_handle = thread::spawn(move || unsafe {
-            EVENT_SENDER = Some(sender);
+            EVENT_SENDER = Some(s_clone);
 
-            let h_module = match GetModuleHandleW(None) {
-                Ok(h) => HINSTANCE(h.0),
-                Err(_) => HINSTANCE(std::ptr::null_mut()),
-            };
-
+            // In Windows Win32, low-level hooks in an executable must pass None for hMod
             let hook = SetWindowsHookExW(
                 WH_KEYBOARD_LL,
                 Some(Self::low_level_keyboard_proc),
-                h_module,
+                None,
                 0,
             );
 
             match hook {
                 Ok(h) => {
                     HOOK_HANDLE = Some(h);
-                    println!("[HotkeyListener] Global keyboard hook successfully active!");
+                    println!("[HotkeyListener] Global keyboard hook successfully active (handle: {:?})!", h);
                     println!("[HotkeyListener] Supported triggers:");
-                    println!("   -> HOLD 'Ctrl + Space' or 'Alt + Space'");
+                    println!("   -> HOLD or TAP 'Ctrl + Space' or 'Alt + Space'");
                     println!("   -> HOLD 'Ctrl + Win'");
                     println!("   -> HOLD 'Right Ctrl' alone (laptop friendly)");
                     println!("   -> PRESS 'F8' (toggle dictation on/off)");
@@ -83,6 +81,7 @@ impl HotkeyListener {
         Self {
             _thread: thread_handle,
             receiver,
+            sender,
         }
     }
 
