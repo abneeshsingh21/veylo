@@ -18,8 +18,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 fn main() {
     println!("======================================================");
-    println!("         WhisperFlow-RS (Native Rust Engine)          ");
-    println!("   100% Free - Offline - Ultra-Lightweight - Fast    ");
+    println!("             VEYLO (Native Rust Voice AI)             ");
+    println!("   100% Free - Offline - Ultra-Lightweight - Private  ");
     println!("======================================================");
 
     // 1. Initialize Tactile Sound Cue Engine (extracted Wispr Flow chimes)

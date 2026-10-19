@@ -107,7 +107,7 @@ impl FloatingPill {
         let mode_start = Arc::new(parking_lot::Mutex::new(Instant::now()));
 
         unsafe {
-            let class_name = w!("WhisperFlowLiquidPill");
+            let class_name = w!("VeyloLiquidPill");
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(Self::wnd_proc),
                 lpszClassName: class_name,
@@ -124,7 +124,7 @@ impl FloatingPill {
             let hwnd = CreateWindowExW(
                 ex_style,
                 class_name,
-                w!("WhisperFlowPill"),
+                w!("VeyloPill"),
                 WS_POPUP,
                 pos_x,
                 pos_y,

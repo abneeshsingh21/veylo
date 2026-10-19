@@ -1,9 +1,9 @@
 [package]
-name = "whisperflow-rs"
+name = "veylo"
 version = "0.1.0"
 edition = "2021"
 authors = ["Abneesh Singh"]
-description = "Ultra-accurate, lightweight, 100% free offline clone of Wispr Flow in Rust"
+description = "Veylo - Ultra-accurate, lightweight, 100% free offline voice intelligence in Rust"
 
 [dependencies]
 windows = { version = "0.58", features = [
@@ -21,3 +21,6 @@ cpal = "0.15"
 rodio = { version = "0.19", default-features = false, features = ["wav"] }
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
+
+[build-dependencies]
+winres = "0.1"
