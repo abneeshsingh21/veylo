@@ -121,6 +121,7 @@ impl AudioRecorder {
         (samples, self.sample_rate)
     }
 
+    #[allow(dead_code)]
     pub fn is_recording(&self) -> bool {
         self.is_recording.load(Ordering::Relaxed)
     }
@@ -132,5 +133,67 @@ impl AudioRecorder {
     #[allow(dead_code)]
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    /// Resamples recorded float samples to 16,000 Hz 16-bit mono PCM and wraps them in a 44-byte RIFF/WAV container.
+    pub fn samples_to_16k_wav(samples: &[f32], source_sample_rate: u32) -> Vec<u8> {
+        if samples.is_empty() || source_sample_rate == 0 {
+            return Vec::new();
+        }
+
+        const TARGET_SAMPLE_RATE: u32 = 16000;
+        let num_output_samples = ((samples.len() as u64 * TARGET_SAMPLE_RATE as u64)
+            / (source_sample_rate as u64)) as usize;
+
+        let mut pcm_bytes = Vec::with_capacity(num_output_samples * 2);
+        let ratio = source_sample_rate as f64 / TARGET_SAMPLE_RATE as f64;
+
+        for i in 0..num_output_samples {
+            let src_idx = i as f64 * ratio;
+            let idx0 = src_idx.floor() as usize;
+            let idx1 = (idx0 + 1).min(samples.len() - 1);
+            let frac = (src_idx - idx0 as f64) as f32;
+
+            let sample = samples[idx0] * (1.0 - frac) + samples[idx1] * frac;
+            let clamped = sample.clamp(-1.0, 1.0);
+            let val = (clamped * 32767.0) as i16;
+            pcm_bytes.extend_from_slice(&val.to_le_bytes());
+        }
+
+        let data_len = pcm_bytes.len() as u32;
+        let mut wav = Vec::with_capacity(44 + pcm_bytes.len());
+
+        // RIFF chunk descriptor
+        wav.extend_from_slice(b"RIFF");
+        let file_size = 36 + data_len;
+        wav.extend_from_slice(&file_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+
+        // "fmt " subchunk
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes()); // Subchunk1Size (16 for PCM)
+        wav.extend_from_slice(&1u16.to_le_bytes());  // AudioFormat (1 for PCM)
+        wav.extend_from_slice(&1u16.to_le_bytes());  // NumChannels (1 mono)
+        wav.extend_from_slice(&TARGET_SAMPLE_RATE.to_le_bytes()); // SampleRate (16000)
+        let byte_rate = TARGET_SAMPLE_RATE * 1 * 2; // SampleRate * NumChannels * BitsPerSample/8
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        let block_align = 1u16 * 2; // NumChannels * BitsPerSample/8
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes()); // BitsPerSample (16)
+
+        // "data" subchunk
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.extend_from_slice(&pcm_bytes);
+
+        wav
+    }
+
+    /// Stops recording and directly produces a 16kHz WAV byte vector and duration in seconds.
+    pub fn stop_recording_as_wav(&self) -> (Vec<u8>, f32) {
+        let (samples, sr) = self.stop_recording();
+        let duration = samples.len() as f32 / sr as f32;
+        let wav = Self::samples_to_16k_wav(&samples, sr);
+        (wav, duration)
     }
 }

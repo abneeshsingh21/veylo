@@ -213,6 +213,10 @@ impl FloatingPill {
         }
     }
 
+    pub fn is_visible(&self) -> bool {
+        self.is_visible.load(Ordering::Relaxed)
+    }
+
     pub fn update_rms(&self, rms: f32) {
         self.current_rms.store(rms.to_bits(), Ordering::Relaxed);
         if !self.is_visible.load(Ordering::Relaxed) {
@@ -363,9 +367,11 @@ impl FloatingPill {
 
                     // 1.5 pt Inner Stroke: #F2F2F0 at 90% opacity
                     // With subtle chromatic fringe at the rim (blue on left, warm on right)
+                    let done_boost = if current_mode == PillMode::Done { 0.40f32 } else { 0.0f32 };
+
                     if d >= -2.0 && d <= 0.2 {
                         let stroke_t = 1.0 - ((d + 0.9).abs() / 1.1).clamp(0.0, 1.0);
-                        let stroke_alpha = stroke_t * 0.90;
+                        let stroke_alpha = (stroke_t * 0.90 + done_boost).min(1.0);
 
                         // Base stroke color #F2F2F0
                         let mut sr = 242.0f32;
@@ -396,7 +402,7 @@ impl FloatingPill {
                     // Specular Highlight along the top rim (thin gradient arc)
                     if d >= -2.5 && d <= -0.2 && y < pill_cy - 4.0 {
                         let top_proximity = 1.0 - ((y - (pill_cy - pill_r)) / 6.0).clamp(0.0, 1.0);
-                        let spec_strength = top_proximity * 0.45;
+                        let spec_strength = (top_proximity * 0.45 + done_boost).min(1.0);
                         r += 255.0 * spec_strength;
                         g += 255.0 * spec_strength;
                         b += 255.0 * spec_strength;

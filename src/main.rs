@@ -1,4 +1,5 @@
 mod audio;
+mod client;
 mod context;
 mod hotkey;
 mod injector;
@@ -6,9 +7,10 @@ mod sounds;
 mod ui;
 
 use audio::AudioRecorder;
+use context::ActiveContext;
 use hotkey::{HotkeyAction, HotkeyListener};
 use sounds::SoundEngine;
-use ui::FloatingPill;
+use ui::{FloatingPill, PillMode};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -35,19 +37,17 @@ fn main() {
     let sound_engine = SoundEngine::new(stream_handle);
     println!("[Main] Tactile sound engine loaded.");
 
-
     // 2. Initialize Low-Latency Microphone Audio Recorder
     let audio_recorder = match AudioRecorder::new() {
         Ok(rec) => Arc::new(rec),
         Err(e) => {
             eprintln!("[Main] Audio initialisation failed: {}", e);
-            eprintln!("[Main] Continuing without microphone for UI & hotkey testing...");
-            // Create dummy or exit
+            eprintln!("[Main] Exiting: microphone is required for voice intelligence.");
             return;
         }
     };
 
-    // 3. Initialize Windows 11 Liquid Glass (Acrylic/Mica) Floating Pill
+    // 3. Initialize Windows 11 Liquid Glass Floating Pill
     let pill = match FloatingPill::new() {
         Ok(p) => Arc::new(p),
         Err(e) => {
@@ -57,7 +57,12 @@ fn main() {
     };
     println!("[Main] Liquid Glass Floating Pill window initialized.");
 
-    // 4. Start 60 FPS Waveform Animation Pump (reads real-time audio RMS)
+    // 4. Asynchronously Ensure Local Inference Engine (Whisper + Qwen SLM) is Running
+    thread::spawn(|| {
+        client::ensure_engine_running();
+    });
+
+    // 5. Start 60 FPS Waveform Animation Pump (runs whenever pill is visible)
     let audio_for_anim = audio_recorder.clone();
     let pill_for_anim = pill.clone();
     let is_running = Arc::new(AtomicBool::new(true));
@@ -65,7 +70,7 @@ fn main() {
 
     thread::spawn(move || {
         while running_clone.load(Ordering::Relaxed) {
-            if audio_for_anim.is_recording() {
+            if pill_for_anim.is_visible() {
                 let rms = audio_for_anim.get_rms();
                 pill_for_anim.update_rms(rms);
             }
@@ -73,10 +78,10 @@ fn main() {
         }
     });
 
-    // 5. Initialize Global Low-Level Keyboard Hook
+    // 6. Initialize Global Low-Level Keyboard Hook
     let hotkey_listener = HotkeyListener::new();
 
-    // 6. Spawn Event Processor Thread
+    // 7. Spawn Event Processor Thread
     let hotkey_rx = hotkey_listener.receiver.clone();
     let audio_for_hotkey = audio_recorder.clone();
     let sounds_for_hotkey = sound_engine.clone();
@@ -86,52 +91,89 @@ fn main() {
         while let Ok(action) = hotkey_rx.recv() {
             match action {
                 HotkeyAction::Start => {
-                    println!("\n>>> [HOTKEY DETECTED: START]");
-                    // Immediate audio tactile feedback (Wispr Flow start chime)
+                    println!("\n>>> [HOTKEY: START RECORDING]");
                     sounds_for_hotkey.play_start();
-                    // Show Liquid Glass floating pill without stealing focus
                     pill_for_hotkey.show();
-                    // Start microphone stream buffer
                     audio_for_hotkey.start_recording();
                 }
                 HotkeyAction::Stop => {
-                    println!("<<< [HOTKEY DETECTED: STOP]");
-                    // Hide Floating Pill
-                    pill_for_hotkey.hide();
-                    // Play stop sound
+                    println!("<<< [HOTKEY: STOP RECORDING]");
                     sounds_for_hotkey.play_stop();
-                    // Capture recorded audio samples
-                    let (samples, sr) = audio_for_hotkey.stop_recording();
-                    let duration = samples.len() as f32 / sr as f32;
+
+                    // Snapshot the active application context before any window changes
+                    let active_ctx = ActiveContext::capture();
+                    let (wav_bytes, duration) = audio_for_hotkey.stop_recording_as_wav();
                     println!(
-                        "[Pipeline] Captured {:.2} seconds of voice data ({} samples).",
+                        "[Pipeline] Captured {:.2}s of audio ({} bytes WAV). Context: \"{}\" [Code: {}, Email: {}, Chat: {}]",
                         duration,
-                        samples.len()
+                        wav_bytes.len(),
+                        active_ctx.window_title,
+                        active_ctx.is_code_editor,
+                        active_ctx.is_email_app,
+                        active_ctx.is_chat_app
                     );
 
-                    if duration >= 0.3 {
-                        // Simulate post-transcription paste feedback
-                        thread::sleep(Duration::from_millis(120));
-                        sounds_for_hotkey.play_paste();
-                        println!("[Pipeline] Ready for Local Whisper + Qwen SLM transcription pass!");
-                    } else {
-                        println!("[Pipeline] Audio clip too short, ignoring.");
+                    // Ignore accidental micro-clicks (< 350ms)
+                    if duration < 0.35 || wav_bytes.is_empty() {
+                        println!("[Pipeline] Audio clip too short (< 350ms), ignoring.");
+                        pill_for_hotkey.hide();
+                        continue;
                     }
+
+                    // Transition pill to Processing state (Section 8.1 shimmer wave)
+                    pill_for_hotkey.set_mode(PillMode::Processing);
+
+                    let pill_worker = pill_for_hotkey.clone();
+                    let sounds_worker = sounds_for_hotkey.clone();
+
+                    thread::spawn(move || {
+                        let t_start = std::time::Instant::now();
+                        match client::transcribe(&wav_bytes, &active_ctx) {
+                            Ok(resp) => {
+                                let total_ms = t_start.elapsed().as_millis();
+                                println!(
+                                    "[Veylo AI] Raw: \"{}\" -> Polished: \"{}\" (Engine: {:?}ms, Total: {}ms)",
+                                    resp.raw.as_deref().unwrap_or(""),
+                                    resp.text,
+                                    resp.duration_ms.unwrap_or(0.0),
+                                    total_ms
+                                );
+
+                                if !resp.text.is_empty() {
+                                    // Play tactile paste chime & inject into caret
+                                    sounds_worker.play_paste();
+                                    injector::inject_text(&resp.text);
+                                }
+
+                                // Section 8.1: brief 150 ms brighten of the rim, then collapse to idle
+                                pill_worker.set_mode(PillMode::Done);
+                                thread::sleep(Duration::from_millis(150));
+                                pill_worker.hide();
+                            }
+                            Err(err) => {
+                                eprintln!("[Veylo AI Error] {}", err);
+                                // Section 8.1: rim tints warm red #FF6B5E on error
+                                pill_worker.set_mode(PillMode::Error);
+                                thread::sleep(Duration::from_millis(1200));
+                                pill_worker.hide();
+                            }
+                        }
+                    });
                 }
             }
         }
     });
 
-    println!("\n[Ready] Application running in background!");
+    println!("\n[Ready] Veylo running and active!");
     println!("[Shortcut] HOLD: 'Ctrl + Win' OR 'Ctrl + Space' OR 'Right Ctrl'");
     println!("[Shortcut] OR PRESS 'F8' to toggle recording on/off.\n");
 
-    // Play startup chime and flash the Liquid Glass Pill on screen for 1.5 seconds
+    // Welcome flash: show the Liquid Glass Pill on screen for 1.2 seconds
     sound_engine.play_start();
     let pill_welcome = pill.clone();
     thread::spawn(move || {
         pill_welcome.show();
-        thread::sleep(Duration::from_millis(1500));
+        thread::sleep(Duration::from_millis(1200));
         pill_welcome.hide();
     });
 
@@ -143,8 +185,6 @@ fn main() {
             DispatchMessageW(&msg);
         }
     }
-
-
 
     is_running.store(false, Ordering::Relaxed);
 }
