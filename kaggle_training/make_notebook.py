@@ -15,8 +15,8 @@ cells = [
         "metadata": {},
         "outputs": [],
         "source": [
-            "# 1. Install Unsloth and efficient training dependencies\n",
-            "!pip install --no-deps \"unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git\"\n",
+            "# 1. Install Unsloth and unsloth_zoo dependencies\n",
+            "!pip install unsloth unsloth_zoo\n",
             "!pip install --no-deps trl peft accelerate bitsandbytes\n",
             "!pip install datasets\n"
         ]
