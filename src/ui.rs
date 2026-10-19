@@ -1,4 +1,3 @@
-use std::f32::consts::PI;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -9,45 +8,108 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW,
+    MonitorFromPoint, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    BLENDFUNCTION, DIB_RGB_COLORS, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetSystemMetrics, RegisterClassW, SetWindowPos, ShowWindow,
-    UpdateLayeredWindow, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetCursorPos, RegisterClassW, SetWindowPos, ShowWindow,
+    UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
+    ULW_ALPHA, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
-const PILL_WIDTH: i32 = 320;
-const PILL_HEIGHT: i32 = 64;
+// Exact specification dimensions
+// Pill recording size: 112 x 40 pt. With shadow padding: 136 x 64 px.
+pub const PILL_W: f32 = 112.0;
+pub const PILL_H: f32 = 40.0;
+pub const SHADOW_PAD: i32 = 12;
+pub const CANVAS_W: i32 = (PILL_W as i32) + SHADOW_PAD * 2; // 136
+pub const CANVAS_H: i32 = (PILL_H as i32) + SHADOW_PAD * 2; // 64
+
+pub const NUM_BARS: usize = 10;
+pub const BAR_WIDTH: f32 = 3.5;
+pub const BAR_GAP: f32 = 4.5;
+pub const MIN_BAR_H: f32 = 8.0;
+pub const MAX_BAR_H: f32 = 22.0;
+
+// Colors matching exact specification:
+// Fill: Deep graphite glass #1A1A1C at ~82% opacity
+// Outline: #F2F2F0 at 90% opacity, 1.5 pt
+// Waveform bars: Cream #F6F1DC
+const COLOR_GRAPHITE_R: f32 = 26.0;
+const COLOR_GRAPHITE_G: f32 = 26.0;
+const COLOR_GRAPHITE_B: f32 = 28.0;
+const COLOR_GRAPHITE_A: f32 = 0.82;
+
+const COLOR_CREAM_R: u8 = 246;
+const COLOR_CREAM_G: u8 = 241;
+const COLOR_CREAM_B: u8 = 220;
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PillMode {
+    Idle,
+    Recording,
+    Processing,
+    Done,
+    Error,
+}
 
 pub struct FloatingPill {
     hwnd: HWND,
     current_rms: Arc<AtomicU32>,
     is_visible: Arc<AtomicBool>,
-    start_time: Arc<parking_lot::Mutex<Option<Instant>>>,
+    mode: Arc<parking_lot::Mutex<PillMode>>,
+    bars: Arc<parking_lot::Mutex<[SpringBar; NUM_BARS]>>,
+    mode_start: Arc<parking_lot::Mutex<Instant>>,
 }
 
 unsafe impl Send for FloatingPill {}
 unsafe impl Sync for FloatingPill {}
 
-static mut GLOBAL_PILL: Option<Arc<PillState>> = None;
+static mut GLOBAL_PILL: Option<Arc<FloatingPillState>> = None;
 
 #[allow(dead_code)]
-struct PillState {
+struct FloatingPillState {
     hwnd: HWND,
-    current_rms: Arc<AtomicU32>,
-    is_visible: Arc<AtomicBool>,
-    start_time: Arc<parking_lot::Mutex<Option<Instant>>>,
+}
+
+#[derive(Clone, Copy)]
+pub struct SpringBar {
+    pub current_h: f32,
+    pub velocity: f32,
+    pub target_h: f32,
+}
+
+impl SpringBar {
+    fn new() -> Self {
+        Self {
+            current_h: MIN_BAR_H,
+            velocity: 0.0,
+            target_h: MIN_BAR_H,
+        }
+    }
+
+    fn update(&mut self, dt: f32) {
+        // Spring smoothing: stiffness ~300, damping ~22
+        let stiffness = 300.0f32;
+        let damping = 22.0f32;
+        let force = -stiffness * (self.current_h - self.target_h) - damping * self.velocity;
+        self.velocity += force * dt;
+        self.current_h += self.velocity * dt;
+        self.current_h = self.current_h.clamp(MIN_BAR_H, MAX_BAR_H);
+    }
 }
 
 impl FloatingPill {
     pub fn new() -> Result<Self, String> {
         let is_visible = Arc::new(AtomicBool::new(false));
         let current_rms = Arc::new(AtomicU32::new(0));
-        let start_time = Arc::new(parking_lot::Mutex::new(None));
+        let mode = Arc::new(parking_lot::Mutex::new(PillMode::Idle));
+        let bars = Arc::new(parking_lot::Mutex::new([SpringBar::new(); NUM_BARS]));
+        let mode_start = Arc::new(parking_lot::Mutex::new(Instant::now()));
 
         unsafe {
             let class_name = w!("WhisperFlowLiquidPill");
@@ -58,12 +120,10 @@ impl FloatingPill {
             };
             let _ = RegisterClassW(&wc);
 
-            let screen_w = GetSystemMetrics(SM_CXSCREEN);
-            let screen_h = GetSystemMetrics(SM_CYSCREEN);
-            let pos_x = (screen_w - PILL_WIDTH) / 2;
-            let pos_y = screen_h - PILL_HEIGHT - 90;
+            // Position at bottom-center of active monitor, 24 pt above taskbar
+            let (pos_x, pos_y) = Self::calculate_screen_position();
 
-            // Layered, Topmost, Non-activating (never steals keyboard focus!)
+            // Layered + Topmost + ToolWindow + NoActivate
             let ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED;
 
             let hwnd = CreateWindowExW(
@@ -73,8 +133,8 @@ impl FloatingPill {
                 WS_POPUP,
                 pos_x,
                 pos_y,
-                PILL_WIDTH,
-                PILL_HEIGHT,
+                CANVAS_W,
+                CANVAS_H,
                 None,
                 None,
                 None,
@@ -82,7 +142,7 @@ impl FloatingPill {
             )
             .map_err(|e| format!("CreateWindowExW failed: {}", e))?;
 
-            // DWM Acrylic blur backdrop
+            // DWM Acrylic Backdrop
             let margins = MARGINS {
                 cxLeftWidth: -1,
                 cxRightWidth: -1,
@@ -107,49 +167,77 @@ impl FloatingPill {
                 std::mem::size_of_val(&backdrop_type) as u32,
             );
 
-            let state = Arc::new(PillState {
-                hwnd,
-                current_rms: current_rms.clone(),
-                is_visible: is_visible.clone(),
-                start_time: start_time.clone(),
-            });
-
-            GLOBAL_PILL = Some(state.clone());
+            GLOBAL_PILL = Some(Arc::new(FloatingPillState { hwnd }));
 
             let pill = Self {
                 hwnd,
                 current_rms,
                 is_visible,
-                start_time,
+                mode,
+                bars,
+                mode_start,
             };
 
-            pill.render_liquid_glass();
+            pill.render();
 
             Ok(pill)
         }
     }
 
+    /// Calculates position on the active screen, 24 pt above the taskbar
+    pub fn calculate_screen_position() -> (i32, i32) {
+        unsafe {
+            let mut cursor_pos = POINT::default();
+            let _ = GetCursorPos(&mut cursor_pos);
+
+            let hmonitor = MonitorFromPoint(cursor_pos, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+
+            if GetMonitorInfoW(hmonitor, &mut mi).as_bool() {
+                let work_rect = mi.rcWork;
+                let screen_w = work_rect.right - work_rect.left;
+                let pos_x = work_rect.left + (screen_w - CANVAS_W) / 2;
+                // 24 pt above taskbar (taking work_rect.bottom into account)
+                let pos_y = work_rect.bottom - CANVAS_H - 24;
+                (pos_x, pos_y)
+            } else {
+                (200, 200)
+            }
+        }
+    }
+
+    pub fn set_mode(&self, new_mode: PillMode) {
+        *self.mode.lock() = new_mode;
+        *self.mode_start.lock() = Instant::now();
+        self.render();
+    }
+
     pub fn show(&self) {
         self.is_visible.store(true, Ordering::Release);
-        *self.start_time.lock() = Some(Instant::now());
-        self.render_liquid_glass();
+        self.set_mode(PillMode::Recording);
+
+        // Reposition dynamically to active monitor before showing
+        let (pos_x, pos_y) = Self::calculate_screen_position();
         unsafe {
-            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
             let _ = SetWindowPos(
                 self.hwnd,
                 HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                pos_x,
+                pos_y,
+                CANVAS_W,
+                CANVAS_H,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
+            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
     }
 
     pub fn hide(&self) {
         self.is_visible.store(false, Ordering::Release);
-        *self.start_time.lock() = None;
+        self.set_mode(PillMode::Idle);
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
@@ -157,14 +245,53 @@ impl FloatingPill {
 
     pub fn update_rms(&self, rms: f32) {
         self.current_rms.store(rms.to_bits(), Ordering::Relaxed);
-        if self.is_visible.load(Ordering::Relaxed) {
-            self.render_liquid_glass();
+        if !self.is_visible.load(Ordering::Relaxed) {
+            return;
         }
+
+        let mode = *self.mode.lock();
+        let dt = 0.016f32; // ~60 FPS
+
+        // Center bias for the 10 bars (indices 0..9)
+        let center_weights = [0.42, 0.60, 0.80, 0.95, 1.0, 1.0, 0.95, 0.80, 0.60, 0.42];
+
+        // Idle breathing sine wave
+        let elapsed = self.mode_start.lock().elapsed().as_secs_f32();
+        let breathe = (elapsed * 3.0).sin() * 0.5 + 0.5;
+
+        let mut bars = self.bars.lock();
+        for i in 0..NUM_BARS {
+            match mode {
+                PillMode::Recording => {
+                    let weight = center_weights[i];
+                    // Map RMS audio level to height with idle breathing floor
+                    let audio_target = MIN_BAR_H + (MAX_BAR_H - MIN_BAR_H) * (rms * 1.8 * weight).min(1.0);
+                    let idle_target = MIN_BAR_H + breathe * 2.0 * weight;
+                    bars[i].target_h = audio_target.max(idle_target);
+                }
+                PillMode::Processing => {
+                    // Shimmer wave sweeping left to right across the 10 bars
+                    let wave_phase = (elapsed * 6.0 - (i as f32) * 0.6).sin() * 0.5 + 0.5;
+                    bars[i].target_h = MIN_BAR_H + wave_phase * (MAX_BAR_H - MIN_BAR_H) * 0.6;
+                }
+                _ => {
+                    bars[i].target_h = MIN_BAR_H;
+                }
+            }
+            bars[i].update(dt);
+        }
+
+        self.render();
     }
 
-    /// Renders true Liquid Glass with iridescent cyan-to-amber rim reflections,
-    /// smoky glass refraction, glossy specular highlights, and an organic flowing waveform ribbon.
-    fn render_liquid_glass(&self) {
+    /// Renders the exact specification:
+    /// - 112 x 40 pt capsule
+    /// - Deep graphite glass #1A1A1C at ~82% opacity
+    /// - 1.5 pt inner stroke #F2F2F0 at 90% opacity
+    /// - Soft outer shadow (0 6 20 rgba(0,0,0,0.35))
+    /// - Top rim specular highlight + bottom inner shadow + chromatic fringe
+    /// - 10 vertical cream bars (#F6F1DC), rounded caps, width 3.5, gap 4.5
+    fn render(&self) {
         unsafe {
             let screen_dc = GetDC(None);
             let mem_dc = CreateCompatibleDC(screen_dc);
@@ -172,8 +299,8 @@ impl FloatingPill {
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: PILL_WIDTH,
-                    biHeight: -PILL_HEIGHT, // Top-down
+                    biWidth: CANVAS_W,
+                    biHeight: -CANVAS_H, // Top-down
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB.0,
@@ -201,189 +328,174 @@ impl FloatingPill {
             let bitmap = bitmap.unwrap();
             let old_bmp = SelectObject(mem_dc, bitmap);
 
-            let rms = f32::from_bits(self.current_rms.load(Ordering::Relaxed));
-            let elapsed_str = if let Some(st) = *self.start_time.lock() {
-                let elapsed = st.elapsed().as_secs();
-                format!("{:02}:{:02}", elapsed / 60, elapsed % 60)
-            } else {
-                "00:00".to_string()
-            };
-
             let pixel_slice = std::slice::from_raw_parts_mut(
                 bits as *mut u32,
-                (PILL_WIDTH * PILL_HEIGHT) as usize,
+                (CANVAS_W * CANVAS_H) as usize,
             );
+            pixel_slice.fill(0); // Fully transparent background
 
-            // Clear to transparent
-            pixel_slice.fill(0);
+            let current_mode = *self.mode.lock();
+            let bars_copy = *self.bars.lock();
 
-            let w = PILL_WIDTH as f32;
-            let h = PILL_HEIGHT as f32;
-            let radius = (h / 2.0) - 2.0; // ~30px radius
-            let pill_half_len = (w / 2.0) - radius - 3.0;
-            let center_x = w / 2.0;
-            let center_y = h / 2.0;
+            // Geometry coordinates inside the padded canvas
+            let pad_x = SHADOW_PAD as f32;
+            let pad_y = SHADOW_PAD as f32;
+            let pill_w = PILL_W;
+            let pill_h = PILL_H;
+            let pill_r = pill_h / 2.0; // 20.0 pt perfect capsule
+            let pill_half_len = (pill_w / 2.0) - pill_r; // 56 - 20 = 36 pt
+            let pill_cx = pad_x + pill_w / 2.0;
+            let pill_cy = pad_y + pill_h / 2.0;
 
-            // 1. Draw Liquid Glass Pill (Smoky translucent base + chromatic rim lighting)
-            for y_i in 0..PILL_HEIGHT {
+            // 1. Draw Capsule Base with Shadow, Glass Refraction, and Specular Rim
+            for y_i in 0..CANVAS_H {
                 let y = y_i as f32 + 0.5;
-                for x_i in 0..PILL_WIDTH {
+                for x_i in 0..CANVAS_W {
                     let x = x_i as f32 + 0.5;
 
-                    let dx = (x - center_x).abs() - pill_half_len;
+                    let dx = (x - pill_cx).abs() - pill_half_len;
                     let clamped_dx = dx.max(0.0);
-                    let dy = (y - center_y).abs();
+                    let dy = (y - pill_cy).abs();
                     let dist = (clamped_dx * clamped_dx + dy * dy).sqrt();
-                    let d = dist - radius;
+                    let d = dist - pill_r;
 
-                    // Outside boundary with smooth subpixel anti-aliasing
-                    if d > 1.2 {
+                    // --- Soft Outer Shadow (0 6 20 rgba(0,0,0,0.35)) ---
+                    // Shift shadow center down by 4px
+                    let shadow_dy = (y - (pill_cy + 4.0)).abs();
+                    let shadow_dist = (clamped_dx * clamped_dx + shadow_dy * shadow_dy).sqrt() - pill_r;
+
+                    if d > 0.5 {
+                        if shadow_dist < 10.0 {
+                            let s_factor = (1.0 - (shadow_dist / 10.0).clamp(0.0, 1.0)).powi(2);
+                            let s_alpha = s_factor * 0.35;
+                            let a_b = (s_alpha * 255.0) as u8;
+                            pixel_slice[(y_i * CANVAS_W + x_i) as usize] = (a_b as u32) << 24;
+                        }
                         continue;
                     }
-                    let edge_alpha = (1.0 - (d / 1.2).max(0.0)).min(1.0);
 
-                    // Deep Obsidian Glass Base (Dark translucent with blue/violet depth)
-                    let mut alpha = 0.76 * edge_alpha;
-                    let mut r = 12.0f32;
-                    let mut g = 15.0f32;
-                    let mut b = 25.0f32;
+                    // --- Pill Interior & Border ---
+                    let edge_aa = (1.0 - (d / 1.0).max(0.0)).min(1.0);
 
-                    // Chromatic Iridescent Rim Lighting (matches the Wispr Liquid Glass Logo!):
-                    // Left edge = Cool Cyan / Electric Blue (x < center_x)
-                    // Right edge = Warm Amber / Peach Glow (x > center_x)
-                    let normalized_x = (x / w).clamp(0.0, 1.0);
-                    let rim_proximity = 1.0 - ((-d).max(0.0) / 3.0).min(1.0);
+                    // Deep graphite glass #1A1A1C at ~82% opacity
+                    let mut alpha = COLOR_GRAPHITE_A * edge_aa;
+                    let mut r = COLOR_GRAPHITE_R;
+                    let mut g = COLOR_GRAPHITE_G;
+                    let mut b = COLOR_GRAPHITE_B;
 
-                    if d >= -3.0 && d <= 0.8 {
-                        // Blend from Cyan (#5AB0FF) on the left to Amber (#FFAE75) on the right
-                        let left_weight = (1.0 - normalized_x).powf(1.4);
-                        let right_weight = normalized_x.powf(1.4);
-
-                        // Cyan component
-                        r += 80.0 * left_weight * rim_proximity;
-                        g += 170.0 * left_weight * rim_proximity;
-                        b += 255.0 * left_weight * rim_proximity;
-
-                        // Amber/Peach component
-                        r += 255.0 * right_weight * rim_proximity;
-                        g += 175.0 * right_weight * rim_proximity;
-                        b += 115.0 * right_weight * rim_proximity;
-
-                        alpha = (alpha + 0.22 * rim_proximity).min(1.0);
+                    // Subtle bottom inner shadow
+                    if y > pill_cy && d < -2.0 {
+                        let bottom_factor = ((y - pill_cy) / pill_r).clamp(0.0, 1.0) * 0.25;
+                        r *= 1.0 - bottom_factor;
+                        g *= 1.0 - bottom_factor;
+                        b *= 1.0 - bottom_factor;
                     }
 
-                    // Upper Specular Glass Highlight (Glossy top reflection)
-                    if d >= -2.0 && d <= 0.0 && y < center_y - 2.0 {
-                        let spec_factor = (1.0 - (y / (center_y - 2.0)).min(1.0)) * 0.65;
-                        r += 220.0 * spec_factor;
-                        g += 235.0 * spec_factor;
-                        b += 255.0 * spec_factor;
-                        alpha = (alpha + spec_factor * 0.25).min(1.0);
+                    // 1.5 pt Inner Stroke: #F2F2F0 at 90% opacity
+                    // With subtle chromatic fringe at the rim (blue on left, warm on right)
+                    if d >= -2.0 && d <= 0.2 {
+                        let stroke_t = 1.0 - ((d + 0.9).abs() / 1.1).clamp(0.0, 1.0);
+                        let stroke_alpha = stroke_t * 0.90;
+
+                        // Base stroke color #F2F2F0
+                        let mut sr = 242.0f32;
+                        let mut sg = 242.0f32;
+                        let mut sb = 240.0f32;
+
+                        // Error mode: warm red rim tint #FF6B5E
+                        if current_mode == PillMode::Error {
+                            sr = 255.0;
+                            sg = 107.0;
+                            sb = 94.0;
+                        } else {
+                            // Light chromatic fringe at the rim only
+                            let norm_x = (x - pad_x) / pill_w;
+                            if norm_x < 0.3 {
+                                sb += 15.0; // Faint blue fringe on left
+                            } else if norm_x > 0.7 {
+                                sr += 15.0; // Faint amber/rose fringe on right
+                            }
+                        }
+
+                        r = r * (1.0 - stroke_alpha) + sr * stroke_alpha;
+                        g = g * (1.0 - stroke_alpha) + sg * stroke_alpha;
+                        b = b * (1.0 - stroke_alpha) + sb * stroke_alpha;
+                        alpha = (alpha + stroke_alpha * 0.25).min(1.0);
                     }
 
-                    // Write 32-bit premultiplied pixel
+                    // Specular Highlight along the top rim (thin gradient arc)
+                    if d >= -2.5 && d <= -0.2 && y < pill_cy - 4.0 {
+                        let top_proximity = 1.0 - ((y - (pill_cy - pill_r)) / 6.0).clamp(0.0, 1.0);
+                        let spec_strength = top_proximity * 0.45;
+                        r += 255.0 * spec_strength;
+                        g += 255.0 * spec_strength;
+                        b += 255.0 * spec_strength;
+                        alpha = (alpha + spec_strength * 0.2).min(1.0);
+                    }
+
+                    // Premultiply alpha for UpdateLayeredWindow
                     let a_byte = (alpha * 255.0).clamp(0.0, 255.0) as u8;
                     let r_byte = (r * alpha).clamp(0.0, 255.0) as u8;
                     let g_byte = (g * alpha).clamp(0.0, 255.0) as u8;
                     let b_byte = (b * alpha).clamp(0.0, 255.0) as u8;
 
-                    pixel_slice[(y_i * PILL_WIDTH + x_i) as usize] =
+                    pixel_slice[(y_i * CANVAS_W + x_i) as usize] =
                         ((a_byte as u32) << 24) | ((r_byte as u32) << 16) | ((g_byte as u32) << 8) | (b_byte as u32);
                 }
             }
 
-            // 2. Draw Left Glowing Status Gem (Iridescent Orb)
-            let orb_x = 26.0f32;
-            let orb_y = center_y;
-            let orb_r = 5.0f32;
-            let is_speaking = rms > 0.03;
+            // 2. Draw 10 Vertical Waveform Bars (Cream #F6F1DC with Rounded Caps)
+            // Total width for 10 bars: 10 * 3.5 + 9 * 4.5 = 75.5 pt
+            let total_bars_w = (NUM_BARS as f32) * BAR_WIDTH + ((NUM_BARS - 1) as f32) * BAR_GAP;
+            let bars_start_x = pill_cx - (total_bars_w / 2.0);
 
-            for yi in (orb_y as i32 - 8)..=(orb_y as i32 + 8) {
-                if yi < 0 || yi >= PILL_HEIGHT {
-                    continue;
-                }
-                for xi in (orb_x as i32 - 8)..=(orb_x as i32 + 8) {
-                    if xi < 0 || xi >= PILL_WIDTH {
+            for i in 0..NUM_BARS {
+                let bx = bars_start_x + (i as f32) * (BAR_WIDTH + BAR_GAP);
+                let bar_h = bars_copy[i].current_h;
+                let half_h = bar_h / 2.0;
+                let cap_r = BAR_WIDTH / 2.0; // 1.75 pt radius for rounded caps
+                let by_top = pill_cy - half_h;
+                let by_bot = pill_cy + half_h;
+
+                // Render each bar as a rounded capsule
+                let min_x = (bx - 0.5) as i32;
+                let max_x = (bx + BAR_WIDTH + 0.5) as i32;
+                let min_y = (by_top - 1.0) as i32;
+                let max_y = (by_bot + 1.0) as i32;
+
+                for py in min_y..=max_y {
+                    if py < 0 || py >= CANVAS_H {
                         continue;
                     }
-                    let dist = (((xi as f32 - orb_x).powi(2) + (yi as f32 - orb_y).powi(2)) as f32).sqrt();
-                    if dist <= orb_r + 3.0 {
-                        let intensity = if dist <= orb_r {
-                            1.0
-                        } else {
-                            (1.0 - (dist - orb_r) / 3.0).max(0.0)
-                        };
-                        let idx = (yi * PILL_WIDTH + xi) as usize;
-                        let (cr, cg, cb) = if is_speaking {
-                            (255.0, 110.0, 150.0) // Neon Rose / Coral
-                        } else {
-                            (110.0, 180.0, 255.0) // Cyan Blue
-                        };
-                        let a = (intensity * 250.0) as u8;
-                        let r = (cr * intensity) as u8;
-                        let g = (cg * intensity) as u8;
-                        let b = (cb * intensity) as u8;
-                        pixel_slice[idx] = ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                    let cy_pos = (py as f32 + 0.5).clamp(by_top + cap_r, by_bot - cap_r);
+                    for px in min_x..=max_x {
+                        if px < 0 || px >= CANVAS_W {
+                            continue;
+                        }
+                        let cx_pos = bx + cap_r;
+                        let d_bar = (((px as f32 + 0.5 - cx_pos).powi(2) + (py as f32 + 0.5 - cy_pos).powi(2)).sqrt()) - cap_r;
+
+                        if d_bar <= 0.5 {
+                            let bar_aa = (1.0 - (d_bar / 0.5).max(0.0)).min(1.0);
+                            let a_val = (bar_aa * 255.0) as u8;
+                            let r_val = ((COLOR_CREAM_R as f32) * bar_aa) as u8;
+                            let g_val = ((COLOR_CREAM_G as f32) * bar_aa) as u8;
+                            let b_val = ((COLOR_CREAM_B as f32) * bar_aa) as u8;
+
+                            let idx = (py * CANVAS_W + px) as usize;
+                            pixel_slice[idx] =
+                                ((a_val as u32) << 24) | ((r_val as u32) << 16) | ((g_val as u32) << 8) | (b_val as u32);
+                        }
                     }
                 }
             }
 
-            // 3. Draw Liquid Waveform in Center (Continuous Liquid Harmonic Ribbon)
-            // Just like the wave in the logo: a glossy, luminous 3D wave ribbon
-            let wave_start_x = 55.0f32;
-            let wave_end_x = w - 85.0f32;
-            let wave_w = wave_end_x - wave_start_x;
-            let amp = 5.0 + (rms * 18.0).min(18.0); // Dynamic height reacting to mic
-
-            for xi in (wave_start_x as i32)..=(wave_end_x as i32) {
-                let x_rel = (xi as f32 - wave_start_x) / wave_w;
-                // Dual harmonic wave with smooth window envelope
-                let window = (x_rel * PI).sin();
-                let wave_y = center_y + (x_rel * 4.0 * PI).sin() * amp * window;
-
-                // Render ribbon thickness of 4px with iridescent gradient
-                let ribbon_thick = 3.5f32;
-                for yi in ((wave_y - ribbon_thick - 1.0) as i32)..=((wave_y + ribbon_thick + 1.0) as i32) {
-                    if yi < 0 || yi >= PILL_HEIGHT {
-                        continue;
-                    }
-                    let dy = (yi as f32 + 0.5 - wave_y).abs();
-                    if dy <= ribbon_thick {
-                        let ribbon_alpha = (1.0 - (dy / ribbon_thick).powi(2)).max(0.0);
-                        let idx = (yi * PILL_WIDTH + xi) as usize;
-
-                        // Color gradient across the wave: Cyan (#60A5FA) -> White Shine -> Amber (#FBBF24)
-                        let t = x_rel;
-                        let r_wave = 100.0 * (1.0 - t) + 250.0 * t;
-                        let g_wave = 180.0 * (1.0 - t) + 200.0 * t;
-                        let b_wave = 255.0 * (1.0 - t) + 120.0 * t;
-
-                        // Center of ribbon has a bright white glossy reflection
-                        let core_shine = (1.0 - (dy / 1.5).min(1.0)) * 0.45;
-                        let r_fin = ((r_wave + core_shine * 255.0) * ribbon_alpha).clamp(0.0, 255.0) as u8;
-                        let g_fin = ((g_wave + core_shine * 255.0) * ribbon_alpha).clamp(0.0, 255.0) as u8;
-                        let b_fin = ((b_wave + core_shine * 255.0) * ribbon_alpha).clamp(0.0, 255.0) as u8;
-                        let a_fin = (ribbon_alpha * 245.0) as u8;
-
-                        // Blend over existing glass pixel
-                        pixel_slice[idx] = ((a_fin as u32) << 24) | ((r_fin as u32) << 16) | ((g_fin as u32) << 8) | (b_fin as u32);
-                    }
-                }
-            }
-
-            // 4. Draw Digital Elapsed Timer on Right (Crisp typography)
-            render_timer_digits(pixel_slice, PILL_WIDTH - 66, (center_y - 6.0) as i32, &elapsed_str);
-
-            // 5. Transfer to Layered Window via UpdateLayeredWindow
-            let screen_w = GetSystemMetrics(SM_CXSCREEN);
-            let screen_h = GetSystemMetrics(SM_CYSCREEN);
-            let pt_dst = POINT {
-                x: (screen_w - PILL_WIDTH) / 2,
-                y: screen_h - PILL_HEIGHT - 90,
-            };
+            // 3. Blit to Screen via UpdateLayeredWindow
+            let (pos_x, pos_y) = Self::calculate_screen_position();
+            let pt_dst = POINT { x: pos_x, y: pos_y };
             let size = SIZE {
-                cx: PILL_WIDTH,
-                cy: PILL_HEIGHT,
+                cx: CANVAS_W,
+                cy: CANVAS_H,
             };
             let pt_src = POINT { x: 0, y: 0 };
             let blend = BLENDFUNCTION {
@@ -419,49 +531,5 @@ impl FloatingPill {
         lparam: LPARAM,
     ) -> LRESULT {
         DefWindowProcW(hwnd, msg, wparam, lparam)
-    }
-}
-
-/// Ultra-crisp, high-definition digital timer digits
-fn render_timer_digits(buffer: &mut [u32], start_x: i32, start_y: i32, text: &str) {
-    let font: [&[u8; 7]; 11] = [
-        &[0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110], // 0
-        &[0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110], // 1
-        &[0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111], // 2
-        &[0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110], // 3
-        &[0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010], // 4
-        &[0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110], // 5
-        &[0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110], // 6
-        &[0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000], // 7
-        &[0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110], // 8
-        &[0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100], // 9
-        &[0b00000, 0b00100, 0b00000, 0b00000, 0b00100, 0b00000, 0b00000], // :
-    ];
-
-    let mut cur_x = start_x;
-    for ch in text.chars() {
-        let glyph_idx = match ch {
-            '0'..='9' => (ch as usize) - ('0' as usize),
-            ':' => 10,
-            _ => continue,
-        };
-        let glyph = font[glyph_idx];
-        let width = if ch == ':' { 3 } else { 5 };
-
-        for row in 0..7 {
-            let row_bits = glyph[row];
-            for col in 0..width {
-                if (row_bits & (1 << (4 - col))) != 0 {
-                    let px = cur_x + col;
-                    let py = start_y + (row as i32) * 2;
-                    if px >= 0 && px < PILL_WIDTH && py >= 0 && py + 1 < PILL_HEIGHT {
-                        let color = 0xF5F1F5F9; // Soft frosty silver
-                        buffer[(py * PILL_WIDTH + px) as usize] = color;
-                        buffer[((py + 1) * PILL_WIDTH + px) as usize] = color;
-                    }
-                }
-            }
-        }
-        cur_x += width + 3;
     }
 }

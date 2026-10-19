@@ -129,6 +129,7 @@ impl AudioRecorder {
         f32::from_bits(self.current_rms.load(Ordering::Relaxed))
     }
 
+    #[allow(dead_code)]
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
