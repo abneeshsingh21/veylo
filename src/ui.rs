@@ -8,17 +8,17 @@ use windows::Win32::Graphics::Dwm::{
     DWMWCP_ROUND,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateSolidBrush,
-    DeleteDC, DeleteObject, EndPaint, GetStockObject, InvalidateRect, LineTo, MoveToEx,
-    RoundRect, SelectObject, SetBkMode, SetTextColor, TextOutW, HBRUSH, HDC,
-    PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT, WHITE_BRUSH,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateRoundRectRgn,
+    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, GetStockObject, InvalidateRect, LineTo,
+    MoveToEx, RoundRect, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TextOutW, HBRUSH,
+    HDC, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT, WHITE_BRUSH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetSystemMetrics, RegisterClassW, SetWindowPos, ShowWindow,
-    HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-    SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetSystemMetrics, RegisterClassW, SetLayeredWindowAttributes,
+    SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
-
 
 const PILL_WIDTH: i32 = 280;
 const PILL_HEIGHT: i32 = 56;
@@ -34,7 +34,6 @@ pub struct FloatingPill {
 unsafe impl Send for FloatingPill {}
 unsafe impl Sync for FloatingPill {}
 
-
 // Global state accessed by the window procedure
 static mut GLOBAL_PILL: Option<Arc<PillState>> = None;
 
@@ -45,7 +44,6 @@ struct PillState {
     is_visible: Arc<AtomicBool>,
     start_time: Arc<parking_lot::Mutex<Option<Instant>>>,
 }
-
 
 impl FloatingPill {
     pub fn new() -> Result<Self, String> {
@@ -69,8 +67,9 @@ impl FloatingPill {
             let pos_x = (screen_w - PILL_WIDTH) / 2;
             let pos_y = screen_h - PILL_HEIGHT - 90;
 
-            // WS_EX_NOACTIVATE: will NEVER steal focus from user's active window!
-            let ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            // WS_EX_LAYERED + WS_EX_TOPMOST + WS_EX_TOOLWINDOW + WS_EX_NOACTIVATE
+            // Will NEVER steal focus from user's active window!
+            let ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED;
 
             let hwnd = CreateWindowExW(
                 ex_style,
@@ -88,7 +87,14 @@ impl FloatingPill {
             )
             .map_err(|e| format!("CreateWindowExW failed: {}", e))?;
 
-            // Apply Windows 11 Liquid Glass / Acrylic & Rounded Corner DWM attributes
+            // 1. Cut the window into a perfect rounded pill shape
+            let rgn = CreateRoundRectRgn(0, 0, PILL_WIDTH + 1, PILL_HEIGHT + 1, 52, 52);
+            let _ = SetWindowRgn(hwnd, rgn, true);
+
+            // 2. Set Layered Window Transparency for Liquid Glass translucency
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 242, LWA_ALPHA);
+
+            // 3. Apply Windows 11 Liquid Glass / Acrylic & Rounded Corner DWM attributes
             let corner_pref = DWMWCP_ROUND;
             let _ = DwmSetWindowAttribute(
                 hwnd,
@@ -98,7 +104,7 @@ impl FloatingPill {
             );
 
             // DWMSBT_TRANSIENTWINDOW (3) = Modern Windows 11 Acrylic blur
-            let backdrop_type = 3u32; // Acrylic
+            let backdrop_type = 3u32;
             let _ = DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_SYSTEMBACKDROP_TYPE,
@@ -205,11 +211,11 @@ impl FloatingPill {
         // 1. Draw Liquid Glass Capsule Background (Deep translucent dark slate with purple tint)
         let bg_color = COLORREF(0x001E1814); // BGR for dark slate #14181E
         let bg_brush = CreateSolidBrush(bg_color);
-        let border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00554433)); // Subtle luminous border
+        let border_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00775533)); // Subtle luminous border
         let old_brush = SelectObject(mem_dc, bg_brush);
         let old_pen = SelectObject(mem_dc, border_pen);
 
-        let _ = RoundRect(mem_dc, 2, 2, PILL_WIDTH - 2, PILL_HEIGHT - 2, 48, 48);
+        let _ = RoundRect(mem_dc, 1, 1, PILL_WIDTH - 1, PILL_HEIGHT - 1, 50, 50);
 
         // 2. Draw Pulsing Glowing Mic Status Dot on the Left
         let dot_color = if rms > 0.05 {
@@ -236,10 +242,8 @@ impl FloatingPill {
 
         for i in 0..NUM_BARS {
             let offset_factor = (i as f32 - (NUM_BARS as f32 / 2.0)).abs() / (NUM_BARS as f32 / 2.0);
-            // Bell curve dampening towards outer bars
             let bell = (1.0 - offset_factor * 0.6).max(0.2);
-            // Minimum resting bar height is 6px, maximum reacting height is 34px
-            let bar_height = (6.0 + rms * 28.0 * bell).min(34.0) as i32;
+            let bar_height = (6.0 + rms * 30.0 * bell).min(36.0) as i32;
             let x = start_x + (i as i32) * (bar_width + bar_gap);
             let y1 = wave_center_y - (bar_height / 2);
             let y2 = wave_center_y + (bar_height / 2);
@@ -267,6 +271,5 @@ impl FloatingPill {
         let _ = DeleteObject(border_pen);
         let _ = DeleteObject(mem_bmp);
         let _ = DeleteDC(mem_dc);
-
     }
 }

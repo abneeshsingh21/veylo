@@ -121,11 +121,17 @@ fn main() {
     });
 
     println!("\n[Ready] Application running in background!");
-    println!("[Shortcut] HOLD or PRESS: 'Ctrl + Win' OR 'Ctrl + Space' to dictate.");
-    println!("[Shortcut] RELEASE keys to stop dictating.\n");
+    println!("[Shortcut] HOLD: 'Ctrl + Win' OR 'Ctrl + Space' OR 'Right Ctrl'");
+    println!("[Shortcut] OR PRESS 'F8' to toggle recording on/off.\n");
 
-    // Play a brief startup chime so user knows engine is ready
+    // Play startup chime and flash the Liquid Glass Pill on screen for 1.5 seconds
     sound_engine.play_start();
+    let pill_welcome = pill.clone();
+    thread::spawn(move || {
+        pill_welcome.show();
+        thread::sleep(Duration::from_millis(1500));
+        pill_welcome.hide();
+    });
 
     // Main Win32 event pump
     unsafe {
@@ -135,6 +141,7 @@ fn main() {
             DispatchMessageW(&msg);
         }
     }
+
 
 
     is_running.store(false, Ordering::Relaxed);
