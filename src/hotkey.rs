@@ -4,7 +4,8 @@ use std::thread;
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_F8, VK_LCONTROL, VK_LWIN, VK_RCONTROL, VK_RWIN, VK_SPACE,
+    VK_CONTROL, VK_F8, VK_LCONTROL, VK_LMENU, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RWIN,
+    VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
@@ -22,6 +23,13 @@ static mut HOOK_HANDLE: Option<HHOOK> = None;
 static mut EVENT_SENDER: Option<Sender<HotkeyAction>> = None;
 static IS_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+// Atomic key state trackers — eliminates race conditions with GetAsyncKeyState
+static CTRL_HELD: AtomicBool = AtomicBool::new(false);
+static WIN_HELD: AtomicBool = AtomicBool::new(false);
+static ALT_HELD: AtomicBool = AtomicBool::new(false);
+static SPACE_HELD: AtomicBool = AtomicBool::new(false);
+static RCTRL_HELD: AtomicBool = AtomicBool::new(false);
+
 pub struct HotkeyListener {
     _thread: thread::JoinHandle<()>,
     pub receiver: Receiver<HotkeyAction>,
@@ -34,7 +42,6 @@ impl HotkeyListener {
         let thread_handle = thread::spawn(move || unsafe {
             EVENT_SENDER = Some(sender);
 
-            // Fetch the current module handle so WH_KEYBOARD_LL hook is valid across all desktops
             let h_module = match GetModuleHandleW(None) {
                 Ok(h) => HINSTANCE(h.0),
                 Err(_) => HINSTANCE(std::ptr::null_mut()),
@@ -50,11 +57,12 @@ impl HotkeyListener {
             match hook {
                 Ok(h) => {
                     HOOK_HANDLE = Some(h);
-                    println!("[HotkeyListener] Global keyboard hook successfully installed!");
+                    println!("[HotkeyListener] Global keyboard hook successfully active!");
                     println!("[HotkeyListener] Supported triggers:");
-                    println!("   -> HOLD 'Ctrl + Win' or 'Ctrl + Space'");
+                    println!("   -> HOLD 'Ctrl + Space' or 'Alt + Space'");
+                    println!("   -> HOLD 'Ctrl + Win'");
                     println!("   -> HOLD 'Right Ctrl' alone (laptop friendly)");
-                    println!("   -> PRESS 'F8' (single key toggle: start/stop)");
+                    println!("   -> PRESS 'F8' (toggle dictation on/off)");
 
                     let mut msg = MSG::default();
                     while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -90,57 +98,99 @@ impl HotkeyListener {
 
             let kbd = *(l_param.0 as *const KBDLLHOOKSTRUCT);
             let vk = kbd.vkCode as i32;
+            let is_extended = (kbd.flags.0 & 1) != 0;
 
-            // 1. F8 Toggle Trigger (single key press)
-            if is_down && vk == VK_F8.0 as i32 {
-                let currently_active = IS_ACTIVE.load(Ordering::SeqCst);
-                if currently_active {
-                    IS_ACTIVE.store(false, Ordering::SeqCst);
-                    if let Some(ref sender) = EVENT_SENDER {
-                        let _ = sender.send(HotkeyAction::Stop);
+            // Classify key
+            let is_ctrl = vk == VK_CONTROL.0 as i32 || vk == VK_LCONTROL.0 as i32 || vk == VK_RCONTROL.0 as i32;
+            let is_rctrl = vk == VK_RCONTROL.0 as i32 || (is_ctrl && is_extended);
+            let is_win = vk == VK_LWIN.0 as i32 || vk == VK_RWIN.0 as i32;
+            let is_alt = vk == VK_MENU.0 as i32 || vk == VK_LMENU.0 as i32 || vk == VK_RMENU.0 as i32;
+            let is_space = vk == VK_SPACE.0 as i32;
+            let is_f8 = vk == VK_F8.0 as i32;
+
+            if is_down {
+                // Update tracker
+                if is_ctrl {
+                    CTRL_HELD.store(true, Ordering::SeqCst);
+                    if is_rctrl {
+                        RCTRL_HELD.store(true, Ordering::SeqCst);
                     }
-                } else {
+                }
+                if is_win {
+                    WIN_HELD.store(true, Ordering::SeqCst);
+                }
+                if is_alt {
+                    ALT_HELD.store(true, Ordering::SeqCst);
+                }
+                if is_space {
+                    SPACE_HELD.store(true, Ordering::SeqCst);
+                }
+
+                // 1. Single Key Toggle: F8
+                if is_f8 {
+                    let currently_active = IS_ACTIVE.load(Ordering::SeqCst);
+                    if currently_active {
+                        IS_ACTIVE.store(false, Ordering::SeqCst);
+                        if let Some(ref sender) = EVENT_SENDER {
+                            let _ = sender.send(HotkeyAction::Stop);
+                        }
+                    } else {
+                        IS_ACTIVE.store(true, Ordering::SeqCst);
+                        if let Some(ref sender) = EVENT_SENDER {
+                            let _ = sender.send(HotkeyAction::Start);
+                        }
+                    }
+                    return CallNextHookEx(None, n_code, w_param, l_param);
+                }
+
+                // 2. Combination & Push-to-Talk Triggers:
+                let ctrl = CTRL_HELD.load(Ordering::SeqCst);
+                let win = WIN_HELD.load(Ordering::SeqCst);
+                let alt = ALT_HELD.load(Ordering::SeqCst);
+                let rctrl = RCTRL_HELD.load(Ordering::SeqCst);
+
+                let trigger_fired = (is_space && (ctrl || alt))
+                    || (is_win && ctrl)
+                    || (is_ctrl && win)
+                    || is_rctrl
+                    || rctrl;
+
+                let currently_active = IS_ACTIVE.load(Ordering::SeqCst);
+                if trigger_fired && !currently_active {
+                    println!(
+                        "[Hotkey] Trigger ACTIVATED -> Start dictation (space={}, ctrl={}, win={}, alt={}, rctrl={})",
+                        is_space, ctrl, win, alt, is_rctrl
+                    );
                     IS_ACTIVE.store(true, Ordering::SeqCst);
                     if let Some(ref sender) = EVENT_SENDER {
                         let _ = sender.send(HotkeyAction::Start);
                     }
                 }
-                return CallNextHookEx(None, n_code, w_param, l_param);
-            }
-
-            // 2. Push-to-Talk Combinations:
-            let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0
-                || (GetAsyncKeyState(VK_LCONTROL.0 as i32) as u16 & 0x8000) != 0
-                || (GetAsyncKeyState(VK_RCONTROL.0 as i32) as u16 & 0x8000) != 0;
-
-            let win_down = (GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000) != 0
-                || (GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000) != 0;
-
-            let space_down = (GetAsyncKeyState(VK_SPACE.0 as i32) as u16 & 0x8000) != 0;
-            let rctrl_down = (GetAsyncKeyState(VK_RCONTROL.0 as i32) as u16 & 0x8000) != 0;
-
-            // Combination active: (Ctrl + Win) OR (Ctrl + Space) OR (Right Ctrl alone)
-            let combo_pressed = (ctrl_down && win_down) || (ctrl_down && space_down) || rctrl_down;
-            let currently_active = IS_ACTIVE.load(Ordering::Relaxed);
-
-            if is_down && combo_pressed && !currently_active {
-                IS_ACTIVE.store(true, Ordering::SeqCst);
-                if let Some(ref sender) = EVENT_SENDER {
-                    let _ = sender.send(HotkeyAction::Start);
+            } else if is_up {
+                // Update tracker
+                if is_ctrl {
+                    CTRL_HELD.store(false, Ordering::SeqCst);
+                    RCTRL_HELD.store(false, Ordering::SeqCst);
                 }
-            } else if is_up && currently_active {
-                // Check if any held trigger was released
-                let released_relevant_key = vk == VK_CONTROL.0 as i32
-                    || vk == VK_LCONTROL.0 as i32
-                    || vk == VK_RCONTROL.0 as i32
-                    || vk == VK_LWIN.0 as i32
-                    || vk == VK_RWIN.0 as i32
-                    || vk == VK_SPACE.0 as i32;
+                if is_win {
+                    WIN_HELD.store(false, Ordering::SeqCst);
+                }
+                if is_alt {
+                    ALT_HELD.store(false, Ordering::SeqCst);
+                }
+                if is_space {
+                    SPACE_HELD.store(false, Ordering::SeqCst);
+                }
 
-                if released_relevant_key {
-                    IS_ACTIVE.store(false, Ordering::SeqCst);
-                    if let Some(ref sender) = EVENT_SENDER {
-                        let _ = sender.send(HotkeyAction::Stop);
+                let currently_active = IS_ACTIVE.load(Ordering::SeqCst);
+                if currently_active {
+                    let released_relevant = is_ctrl || is_win || is_alt || is_space || is_rctrl;
+                    if released_relevant {
+                        println!("[Hotkey] Trigger RELEASED -> Stop dictation and transcribe");
+                        IS_ACTIVE.store(false, Ordering::SeqCst);
+                        if let Some(ref sender) = EVENT_SENDER {
+                            let _ = sender.send(HotkeyAction::Stop);
+                        }
                     }
                 }
             }

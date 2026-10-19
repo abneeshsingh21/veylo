@@ -21,6 +21,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 fn main() {
+    // Ignore stdout broken pipe errors if running detached from console
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.to_string();
+        if !msg.contains("failed printing to stdout") && !msg.contains("os error 6") {
+            eprintln!("[Veylo Panic] {}", info);
+        }
+    }));
+
     println!("======================================================");
     println!("             VEYLO (Native Rust Voice AI)             ");
     println!("   100% Free - Offline - Ultra-Lightweight - Private  ");

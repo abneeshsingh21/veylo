@@ -18,4 +18,4 @@ echo [Shortcuts]
 echo   - HOLD 'Ctrl + Win' or 'Ctrl + Space' or 'Right Ctrl'
 echo   - PRESS 'F8' to toggle recording on/off
 echo.
-start "" "target\release\veylo.exe"
+"target\release\veylo.exe"
