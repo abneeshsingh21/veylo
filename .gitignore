@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+Cargo.lock
+models/*.gguf
+models/*.bin
+*.pdb
+*.exe
