@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+    RegisterHotKey, MOD_NOREPEAT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_HOTKEY,
@@ -109,21 +109,11 @@ fn main() {
     // 6. Initialize Global Low-Level Keyboard Hook
     let hotkey_listener = HotkeyListener::new();
 
-    // 7. Register Kernel-Level Global Hotkeys as a Dual-Layer Guarantee
+    // 7. Register Kernel-Level Global Hotkey for F8 toggle
     unsafe {
-        // Hotkey 101: Ctrl + Space
-        let h1 = RegisterHotKey(None, 101, MOD_CONTROL | MOD_NOREPEAT, 0x20);
-        // Hotkey 102: Alt + Space
-        let h2 = RegisterHotKey(None, 102, MOD_ALT | MOD_NOREPEAT, 0x20);
         // Hotkey 103: F8 (VK_F8)
         let h3 = RegisterHotKey(None, 103, MOD_NOREPEAT, 0x77);
-
-        println!(
-            "[KernelHotkeys] Registered OS hotkeys: Ctrl+Space: {}, Alt+Space: {}, F8: {}",
-            h1.is_ok(),
-            h2.is_ok(),
-            h3.is_ok()
-        );
+        println!("[KernelHotkeys] Registered OS hotkey F8: {}", h3.is_ok());
     }
 
     // 8. Spawn Event Processor Thread
