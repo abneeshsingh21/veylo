@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Veylo Hub</title>
+  <style>
+    :root {
+      --bg-base: #121214;
+      --bg-glass: rgba(26, 26, 28, 0.78);
+      --bg-card: rgba(35, 35, 38, 0.65);
+      --bg-card-hover: rgba(45, 45, 50, 0.85);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(246, 241, 220, 0.25);
+      --accent-cream: #F6F1DC;
+      --accent-cream-dim: rgba(246, 241, 220, 0.7);
+      --text-main: #EDEDEC;
+      --text-muted: #8E8E93;
+      --text-dim: #5C5C60;
+      --font-stack: "Segoe UI Variable Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: var(--font-stack);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Glass Sidebar */
+    .sidebar {
+      width: 240px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(40px) saturate(180%);
+      -webkit-backdrop-filter: blur(40px) saturate(180%);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      padding: 20px 14px;
+      flex-shrink: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 8px 24px 8px;
+    }
+
+    .brand-logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+      color: #FFF;
+    }
+
+    .brand-tag {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(246, 241, 220, 0.12);
+      color: var(--accent-cream);
+      font-weight: 500;
+      margin-left: auto;
+    }
+
+    .nav-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 1;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.18s ease;
+    }
+
+    .nav-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-main);
+    }
+
+    .nav-item.active {
+      background: rgba(246, 241, 220, 0.12);
+      color: var(--accent-cream);
+      font-weight: 600;
+    }
+
+    .nav-item svg {
+      width: 18px;
+      height: 18px;
+      stroke-width: 2;
+      stroke: currentColor;
+      fill: none;
+    }
+
+    .sidebar-footer {
+      padding-top: 16px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .engine-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #34C759;
+      box-shadow: 0 0 8px rgba(52, 199, 89, 0.6);
+    }
+
+    /* Content Area */
+    .content-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: rgba(18, 18, 20, 0.85);
+      backdrop-filter: blur(20px);
+      overflow-y: auto;
+    }
+
+    .top-header {
+      padding: 24px 32px 18px 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .page-title {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.4px;
+    }
+
+    .hotkey-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 12px;
+      color: var(--accent-cream);
+      font-weight: 500;
+    }
+
+    .main-view {
+      padding: 28px 32px;
+      display: none;
+    }
+
+    .main-view.active {
+      display: block;
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Stats Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 16px 18px;
+      transition: border-color 0.2s;
+    }
+
+    .stat-card:hover {
+      border-color: var(--border-glow);
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .stat-val {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--accent-cream);
+      letter-spacing: -0.5px;
+    }
+
+    /* Section Subtitle */
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .section-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    /* History Feed */
+    .feed-container {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .feed-item {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+
+    .feed-item:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-glow);
+    }
+
+    .feed-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .feed-app {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    .feed-text {
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--text-main);
+    }
+
+    .feed-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .btn-action {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .btn-action:hover {
+      background: rgba(246, 241, 220, 0.15);
+      color: var(--accent-cream);
+    }
+
+    /* Card list styling */
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .card-row {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .btn-primary {
+      background: var(--accent-cream);
+      color: #121214;
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+    }
+
+    /* Scratchpad */
+    .scratchpad-textarea {
+      width: 100%;
+      height: 380px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 20px;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 15px;
+      line-height: 1.6;
+      resize: none;
+      outline: none;
+      user-select: text;
+    }
+
+    .scratchpad-textarea:focus {
+      border-color: var(--border-glow);
+    }
+
+    /* Settings group */
+    .settings-group {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 18px 20px;
+      margin-bottom: 20px;
+    }
+
+    .settings-group-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--accent-cream);
+      margin-bottom: 12px;
+    }
+
+    .setting-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .setting-item:last-child {
+      border-bottom: none;
+    }
+
+    .setting-text h4 {
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+
+    .setting-text p {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Left Glass Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="/assets/icons/veylo.ico" class="brand-logo" alt="Veylo" onerror="this.style.display='none'">
+      <span class="brand-title">Veylo</span>
+      <span class="brand-tag">v0.1.0</span>
+    </div>
+
+    <nav class="nav-list">
+      <div class="nav-item active" onclick="switchTab('home')">
+        <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+        Home
+      </div>
+      <div class="nav-item" onclick="switchTab('dictionary')">
+        <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+        Dictionary
+      </div>
+      <div class="nav-item" onclick="switchTab('snippets')">
+        <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+        Snippets
+      </div>
+      <div class="nav-item" onclick="switchTab('style')">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg>
+        Style
+      </div>
+      <div class="nav-item" onclick="switchTab('scratchpad')">
+        <svg viewBox="0 0 24 24"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+        Scratchpad
+      </div>
+      <div class="nav-item" onclick="switchTab('settings')">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        Settings
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="engine-status">
+        <span class="status-dot"></span>
+        <span>100% Offline AI Ready</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Right Content Area -->
+  <main class="content-area">
+    <header class="top-header">
+      <h1 class="page-title" id="page-title">Home</h1>
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <button onclick="triggerDictation()" style="display: flex; align-items: center; gap: 7px; padding: 7px 16px; background: rgba(246, 241, 220, 0.16); border: 1px solid var(--border-glow); color: var(--accent-cream); border-radius: 9px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s;" onmouseover="this.style.background='rgba(246, 241, 220, 0.26)'" onmouseout="this.style.background='rgba(246, 241, 220, 0.16)'">
+          <svg style="width: 15px; height: 15px; fill: currentColor;" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+          Dictate (F8)
+        </button>
+        <div class="hotkey-pill">
+          <span>Shortcuts:</span>
+          <b>Ctrl+Space / F8 / Alt+Space</b>
+        </div>
+      </div>
+    </header>
+
+    <!-- 1. HOME TAB -->
+    <section class="main-view active" id="view-home">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total Words</div>
+          <div class="stat-val" id="stat-words">1,240</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Average WPM</div>
+          <div class="stat-val" id="stat-wpm">145</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Time Saved</div>
+          <div class="stat-val" id="stat-time">28 min</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Day Streak</div>
+          <div class="stat-val" id="stat-streak">3 days</div>
+        </div>
+      </div>
+
+      <div class="section-header">
+        <h2 class="section-title">Recent Dictation Feed</h2>
+        <button class="btn-action" onclick="loadHistory()">Refresh</button>
+      </div>
+
+      <div class="feed-container" id="feed-container">
+        <!-- Live items inserted via JS -->
+      </div>
+    </section>
+
+    <!-- 2. DICTIONARY TAB -->
+    <section class="main-view" id="view-dictionary">
+      <div class="section-header">
+        <h2 class="section-title">Learned & Custom Vocabulary</h2>
+        <button class="btn-primary" onclick="addWordPrompt()">+ Add Word</button>
+      </div>
+      <div class="card-list" id="dictionary-list">
+        <!-- Populated via JS -->
+      </div>
+    </section>
+
+    <!-- 3. SNIPPETS TAB -->
+    <section class="main-view" id="view-snippets">
+      <div class="section-header">
+        <h2 class="section-title">Text Expansion Snippets</h2>
+        <button class="btn-primary" onclick="addSnippetPrompt()">+ Add Snippet</button>
+      </div>
+      <div class="card-list" id="snippets-list">
+        <!-- Populated via JS -->
+      </div>
+    </section>
+
+    <!-- 4. STYLE TAB -->
+    <section class="main-view" id="view-style">
+      <div class="section-header">
+        <h2 class="section-title">AI Formatting Styles</h2>
+      </div>
+      <div class="card-list">
+        <div class="card-row">
+          <div>
+            <h4 style="color: var(--accent-cream); margin-bottom: 4px;">Code Editor</h4>
+            <p style="font-size: 13px; color: var(--text-muted);">Converts spoken commands into syntax (camelCase, snake_case, brackets).</p>
+          </div>
+          <span class="feed-app">Active for VS Code</span>
+        </div>
+        <div class="card-row">
+          <div>
+            <h4 style="color: var(--accent-cream); margin-bottom: 4px;">Business Email</h4>
+            <p style="font-size: 13px; color: var(--text-muted);">Polite, formatted paragraphs with sign-offs.</p>
+          </div>
+          <span class="feed-app">Active for Outlook & Gmail</span>
+        </div>
+        <div class="card-row">
+          <div>
+            <h4 style="color: var(--accent-cream); margin-bottom: 4px;">Chat & Hinglish</h4>
+            <p style="font-size: 13px; color: var(--text-muted);">Casual conversational phrasing, natural colloquial Hindi/English.</p>
+          </div>
+          <span class="feed-app">Active for Slack & WhatsApp</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. SCRATCHPAD TAB -->
+    <section class="main-view" id="view-scratchpad">
+      <div class="section-header">
+        <h2 class="section-title">Glass Scratchpad</h2>
+        <button class="btn-primary" onclick="copyScratchpad()">Copy Markdown</button>
+      </div>
+      <textarea class="scratchpad-textarea" id="scratchpad-text" placeholder="Dictate long-form thoughts, notes, and documents directly here..."></textarea>
+    </section>
+
+    <!-- 6. SETTINGS TAB -->
+    <section class="main-view" id="view-settings">
+      <div class="settings-group">
+        <div class="settings-group-title">Shortcuts</div>
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>Primary Dictation Trigger</h4>
+            <p>Hold for Push-to-Talk or Tap for Hands-Free</p>
+          </div>
+          <b>Ctrl + Space</b>
+        </div>
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>Single-Key Toggle</h4>
+            <p>One key to start, one key to stop</p>
+          </div>
+          <b>F8</b>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">Audio & Microphone</div>
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>Default Microphone</h4>
+            <p>Realtek(R) Audio Microphone Array</p>
+          </div>
+          <span class="feed-app">48,000 Hz Stereo</span>
+        </div>
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>Audio Cue Chimes</h4>
+            <p>Tactile Wispr Flow sound cues on start, stop, paste</p>
+          </div>
+          <b>Enabled</b>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">AI Models (100% Offline)</div>
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>Acoustic Model (STT)</h4>
+            <p>Whisper Base Quantized (141 MB)</p>
+          </div>
+          <span class="feed-app">AVX2 CPU Engine</span>
+        </div>
+        <div class="setting-item">
+          <div class="setting-text">
+            <h4>Speech Cleaner (SLM)</h4>
+            <p>Veylo Qwen-0.5B Fine-Tuned (379 MB)</p>
+          </div>
+          <span class="feed-app">Q4_K_M Quantized</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function switchTab(tabId) {
+      document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.main-view').forEach(el => el.classList.remove('active'));
+
+      event.currentTarget.classList.add('active');
+      const view = document.getElementById('view-' + tabId);
+      if (view) view.classList.add('active');
+
+      const titleMap = {
+        home: "Home",
+        dictionary: "Dictionary",
+        snippets: "Snippets",
+        style: "Style Presets",
+        scratchpad: "Scratchpad",
+        settings: "Settings"
+      };
+      document.getElementById('page-title').innerText = titleMap[tabId] || "Veylo Hub";
+    }
+
+    async function loadHistory() {
+      try {
+        const res = await fetch('/api/history');
+        const items = await res.json();
+        const container = document.getElementById('feed-container');
+        if (!items || items.length === 0) {
+          container.innerHTML = '<div style="color: var(--text-muted); padding: 20px 0; text-align: center;">No voice dictations yet. Tap Ctrl + Space to dictate your first message!</div>';
+          return;
+        }
+
+        container.innerHTML = items.map(item => `
+          <div class="feed-item">
+            <div class="feed-meta">
+              <span class="feed-app">${item.app || 'VS Code'}</span>
+              <span>${item.timestamp || 'Just now'} • ${item.duration_ms || 350}ms</span>
+            </div>
+            <div class="feed-text">${item.text}</div>
+            <div class="feed-actions">
+              <button class="btn-action" onclick="copyText('${item.text.replace(/'/g, "\\'")}')">Copy</button>
+              <button class="btn-action" onclick="alert('Raw audio transcript:\\n${item.raw || item.text}')">View Raw</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function copyText(txt) {
+      navigator.clipboard.writeText(txt);
+      alert('Copied to clipboard!');
+    }
+
+    function copyScratchpad() {
+      const text = document.getElementById('scratchpad-text').value;
+      navigator.clipboard.writeText(text);
+      alert('Markdown copied to clipboard!');
+    }
+
+    function addWordPrompt() {
+      const word = prompt("Enter a custom word or phrase to always spell correctly (e.g. 'Veylo'):");
+      if (word) {
+        alert("Added '" + word + "' to your personal dictionary!");
+      }
+    }
+
+    function addSnippetPrompt() {
+      const trigger = prompt("Enter trigger shortcut (e.g. ':email'):");
+      if (trigger) {
+        const replacement = prompt("Enter text replacement:");
+        if (replacement) {
+          alert("Snippet registered: " + trigger + " -> " + replacement);
+        }
+      }
+    }
+
+    async function triggerDictation() {
+      try {
+        const btn = event ? event.currentTarget : null;
+        if (btn) {
+          btn.style.opacity = '0.6';
+          btn.style.transform = 'scale(0.96)';
+        }
+        await fetch('/api/dictation/toggle', { method: 'POST' });
+        setTimeout(() => {
+          if (btn) {
+            btn.style.opacity = '1';
+            btn.style.transform = 'scale(1)';
+          }
+        }, 300);
+      } catch (e) {
+        console.error("Dictation toggle failed:", e);
+      }
+    }
+
+    // Auto-load feed on startup and poll every 2.5s for live updates
+    loadHistory();
+    setInterval(loadHistory, 2500);
+  </script>
+</body>
+</html>

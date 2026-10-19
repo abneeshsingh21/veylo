@@ -508,6 +508,13 @@ impl FloatingPill {
     ) -> LRESULT {
         match msg {
             WM_ERASEBKGND => LRESULT(1),
+            windows::Win32::UI::WindowsAndMessaging::WM_LBUTTONUP => {
+                println!("[Pill] Mouse clicked on Floating Pill -> Toggling dictation");
+                if let Ok(sock) = std::net::UdpSocket::bind("127.0.0.1:0") {
+                    let _ = sock.send_to(b"toggle", "127.0.0.1:48124");
+                }
+                LRESULT(0)
+            }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }

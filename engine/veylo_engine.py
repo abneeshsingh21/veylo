@@ -109,23 +109,79 @@ class VeyloEngine:
 
 ENGINE = None
 
+HISTORY = []
+
 class EngineHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Suppress noisy HTTP request logging
         pass
 
     def do_GET(self):
+        print(f"[Engine HTTP] GET {self.path}", flush=True)
         if self.path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"status": "ready"}\n')
+        elif self.path == "/hub" or self.path == "/":
+            hub_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hub.html")
+            if not os.path.exists(hub_path):
+                hub_path = os.path.join("engine", "hub.html")
+            if os.path.exists(hub_path):
+                with open(hub_path, "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                self.send_response(404)
+                self.end_headers()
+        elif self.path == "/api/history":
+            body = json.dumps(list(reversed(HISTORY))).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path.startswith("/assets/"):
+            rel_path = self.path.lstrip("/").replace("/", os.sep)
+            if os.path.exists(rel_path):
+                with open(rel_path, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                if rel_path.endswith(".ico"):
+                    self.send_header("Content-Type", "image/x-icon")
+                elif rel_path.endswith(".png"):
+                    self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_response(404)
+                self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
-        if self.path.startswith("/transcribe"):
+        if self.path == "/api/dictation/toggle":
+            import socket
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.sendto(b"toggle", ("127.0.0.1", 48124))
+                sock.close()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status": "toggled"}\n')
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+        elif self.path.startswith("/transcribe"):
             content_length = int(self.headers.get("Content-Length", 0))
             wav_data = self.rfile.read(content_length)
             
@@ -140,6 +196,24 @@ class EngineHandler(BaseHTTPRequestHandler):
                 is_email=is_email,
                 is_chat=is_chat
             )
+            
+            if result.get("status") == "ok" and result.get("text"):
+                app_label = "Active Window"
+                if is_code:
+                    app_label = "Code Editor"
+                elif is_email:
+                    app_label = "Email Client"
+                elif is_chat:
+                    app_label = "Chat App"
+                    
+                HISTORY.append({
+                    "id": len(HISTORY) + 1,
+                    "timestamp": time.strftime("%I:%M %p"),
+                    "raw": result.get("raw", ""),
+                    "text": result.get("text", ""),
+                    "duration_ms": result.get("duration_ms", 0),
+                    "app": app_label
+                })
             
             resp_body = json.dumps(result).encode("utf-8")
             self.send_response(200)
