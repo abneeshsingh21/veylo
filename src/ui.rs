@@ -3,21 +3,16 @@ use std::sync::Arc;
 use std::time::Instant;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
-use windows::Win32::Graphics::Dwm::{
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE,
-    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW,
     MonitorFromPoint, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
     BLENDFUNCTION, DIB_RGB_COLORS, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
-use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, RegisterClassW, SetWindowPos, ShowWindow,
     UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
     ULW_ALPHA, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    WS_POPUP, WM_ERASEBKGND,
 };
 
 // Exact specification dimensions
@@ -141,31 +136,6 @@ impl FloatingPill {
                 None,
             )
             .map_err(|e| format!("CreateWindowExW failed: {}", e))?;
-
-            // DWM Acrylic Backdrop
-            let margins = MARGINS {
-                cxLeftWidth: -1,
-                cxRightWidth: -1,
-                cyTopHeight: -1,
-                cyBottomHeight: -1,
-            };
-            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
-
-            let corner_pref = DWMWCP_ROUND;
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
-                &corner_pref as *const _ as *const _,
-                std::mem::size_of_val(&corner_pref) as u32,
-            );
-
-            let backdrop_type = 3u32; // Acrylic blur
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_SYSTEMBACKDROP_TYPE,
-                &backdrop_type as *const _ as *const _,
-                std::mem::size_of_val(&backdrop_type) as u32,
-            );
 
             GLOBAL_PILL = Some(Arc::new(FloatingPillState { hwnd }));
 
@@ -530,6 +500,9 @@ impl FloatingPill {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        DefWindowProcW(hwnd, msg, wparam, lparam)
+        match msg {
+            WM_ERASEBKGND => LRESULT(1),
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
 }
