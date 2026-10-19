@@ -22,6 +22,7 @@ pub enum HotkeyAction {
 static mut HOOK_HANDLE: Option<HHOOK> = None;
 static mut EVENT_SENDER: Option<Sender<HotkeyAction>> = None;
 static IS_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PRESS_START: parking_lot::Mutex<Option<std::time::Instant>> = parking_lot::Mutex::new(None);
 
 // Atomic key state trackers — eliminates race conditions with GetAsyncKeyState
 static CTRL_HELD: AtomicBool = AtomicBool::new(false);
@@ -42,6 +43,7 @@ impl HotkeyListener {
         let s_clone = sender.clone();
 
         let thread_handle = thread::spawn(move || unsafe {
+            crate::attach_to_default_desktop();
             EVENT_SENDER = Some(s_clone);
 
             // In Windows Win32, low-level hooks in an executable must pass None for hMod
@@ -155,14 +157,29 @@ impl HotkeyListener {
                     || rctrl;
 
                 let currently_active = IS_ACTIVE.load(Ordering::SeqCst);
-                if trigger_fired && !currently_active {
-                    println!(
-                        "[Hotkey] Trigger ACTIVATED -> Start dictation (space={}, ctrl={}, win={}, alt={}, rctrl={})",
-                        is_space, ctrl, win, alt, is_rctrl
-                    );
-                    IS_ACTIVE.store(true, Ordering::SeqCst);
-                    if let Some(ref sender) = EVENT_SENDER {
-                        let _ = sender.send(HotkeyAction::Start);
+                if trigger_fired {
+                    if !currently_active {
+                        println!(
+                            "[Hotkey] Trigger ACTIVATED -> Start dictation (space={}, ctrl={}, win={}, alt={}, rctrl={})",
+                            is_space, ctrl, win, alt, is_rctrl
+                        );
+                        *PRESS_START.lock() = Some(std::time::Instant::now());
+                        IS_ACTIVE.store(true, Ordering::SeqCst);
+                        if let Some(ref sender) = EVENT_SENDER {
+                            let _ = sender.send(HotkeyAction::Start);
+                        }
+                    } else {
+                        // If already active, check if this is a second tap to stop
+                        if let Some(start) = *PRESS_START.lock() {
+                            if start.elapsed().as_millis() > 300 {
+                                println!("[Hotkey] Second tap detected -> Stopping dictation");
+                                *PRESS_START.lock() = None;
+                                IS_ACTIVE.store(false, Ordering::SeqCst);
+                                if let Some(ref sender) = EVENT_SENDER {
+                                    let _ = sender.send(HotkeyAction::Stop);
+                                }
+                            }
+                        }
                     }
                 }
             } else if is_up {
@@ -185,10 +202,20 @@ impl HotkeyListener {
                 if currently_active {
                     let released_relevant = is_ctrl || is_win || is_alt || is_space || is_rctrl;
                     if released_relevant {
-                        println!("[Hotkey] Trigger RELEASED -> Stop dictation and transcribe");
-                        IS_ACTIVE.store(false, Ordering::SeqCst);
-                        if let Some(ref sender) = EVENT_SENDER {
-                            let _ = sender.send(HotkeyAction::Stop);
+                        if let Some(start) = *PRESS_START.lock() {
+                            let held_ms = start.elapsed().as_millis();
+                            if held_ms > 400 {
+                                // Long press (Push-to-Talk): stop on release!
+                                println!("[Hotkey] Held for {}ms -> Stop dictation on release", held_ms);
+                                *PRESS_START.lock() = None;
+                                IS_ACTIVE.store(false, Ordering::SeqCst);
+                                if let Some(ref sender) = EVENT_SENDER {
+                                    let _ = sender.send(HotkeyAction::Stop);
+                                }
+                            } else {
+                                // Short tap (< 400ms): Keep recording in Hands-free Toggle mode!
+                                println!("[Hotkey] Quick tap ({}ms) -> Staying active in hands-free toggle mode!", held_ms);
+                            }
                         }
                     }
                 }

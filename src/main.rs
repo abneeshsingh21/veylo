@@ -23,7 +23,24 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_HOTKEY,
 };
 
+pub fn attach_to_default_desktop() {
+    unsafe {
+        use windows::Win32::System::StationsAndDesktops::{OpenDesktopW, SetThreadDesktop, DESKTOP_CONTROL_FLAGS};
+        use windows::core::w;
+        // 0x10000000 is GENERIC_ALL
+        if let Ok(hdesk) = OpenDesktopW(w!("Default"), DESKTOP_CONTROL_FLAGS(0), false, 0x10000000) {
+            if !hdesk.0.is_null() {
+                let _ = SetThreadDesktop(hdesk);
+                println!("[Desktop] Successfully attached thread to physical desktop: Default");
+            }
+        }
+    }
+}
+
 fn main() {
+    // Ensure thread is attached to physical interactive desktop station
+    attach_to_default_desktop();
+
     // Ignore stdout broken pipe errors if running detached from console
     std::panic::set_hook(Box::new(|info| {
         let msg = info.to_string();
